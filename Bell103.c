@@ -48,116 +48,64 @@ const uint8_t sinTable[] PROGMEM = {
 	0x4f, 0x52, 0x55, 0x58, 0x5b, 0x5e, 0x61, 0x64, 0x67, 0x6a, 0x6d, 0x70, 0x73, 0x76, 0x79, 0x7c,
 };
 
-const int8_t markSinTable[] PROGMEM = {
-	0x00, 0x7e, 0xea, 0x85, 0x2c, 0x73, 0xbf, 0x99, 0x53, 0x58, 0x9d, 0xb9, 0x6f, 0x33, 0x88, 0xe2,
-};
-
-const int8_t markCosTable[] PROGMEM = {
-	0x7f, 0xf5, 0x83, 0x21, 0x77, 0xc9, 0x93, 0x4a, 0x60, 0xa5, 0xb0, 0x69, 0x3d, 0x8c, 0xd7, 0x7b,
-};
-
-const int8_t spaceSinTable[] PROGMEM = {
-	0x00, 0x7d, 0x2b, 0x92, 0xaf, 0x53, 0x6d, 0xd3, 0x83, 0x02, 0x7e, 0x29, 0x90, 0xb1, 0x54, 0x6c,
-};
-
-const int8_t spaceCosTable[] PROGMEM = {
-	0x7f, 0x16, 0x88, 0xc1, 0x62, 0x60, 0xbf, 0x89, 0x18, 0x7f, 0x13, 0x88, 0xc3, 0x64, 0x5f, 0xbd,
-};
-
 typedef struct {
 	// Buffer of the last 16 ADC samples
-	int8_t sampleBuffer[16];
+	int8_t sampleBuffer[20];
+	int8_t lpfBuf[8];
 	uint8_t sampleBufOffset;
+	uint8_t lpfBufOffset;
 	//uint16_t lastBits;
-	
+
 	// Offset into the outgoing sine wave
 	uint16_t phaseOut;
 } line_t;
 
 line_t line;
-
-uint8_t countOnes(uint16_t n)
-{
-	uint8_t i;
-	uint8_t count = 0;
 	
-	for (i = 0; i < 16; i++) {
-		if (n & (1 << i))
-			count++;
-	}
-	
-	return count;
-}
-	
-ISR(TIMER2_COMPA_vect) {
+ISR(TIMER2_COMPA_vect, ISR_NOBLOCK) {
 	uint8_t i;
 	int8_t sample;
-	int32_t miSum, mqSum, siSum, sqSum;
-	int32_t sqrMISum, sqrMQSum, sqrSISum, sqrSQSum;
-	//double sqrMISum, sqrMQSum, sqrSISum, sqrSQSum;
+	uint8_t nextSampleBufOffset;
 	
 	PORTD |= _BV(PORTD2);
 	
-	// Read the RXD pin
-	if (PIND & 1) {
-		line.phaseOut += 30330; // ~2225 Hz
-		//line.phaseOut += 17312; // ~1270 Hz
-	} else {
-		line.phaseOut += 27604; // ~2025 Hz
-		//line.phaseOut += 14586; // ~1070 Hz
-	}
-	PORTB = pgm_read_byte(&sinTable[line.phaseOut >> 8]) >> 2;
-	
-	line.sampleBuffer[line.sampleBufOffset++] = (int8_t)(ADCH - 0x80);
-	if (line.sampleBufOffset >= 16)
-		line.sampleBufOffset = 0;
-		
-	miSum = 0;
-	mqSum = 0;
-	siSum = 0;
-	sqSum = 0;
-	
-	for (i = 0; i < 16; i++) {
-		sample = line.sampleBuffer[(i + line.sampleBufOffset) & 0xf];
-		miSum = miSum + (int16_t)sample * (int8_t)pgm_read_byte(&markSinTable[i]);
-		mqSum = mqSum + (int16_t)sample * (int8_t)pgm_read_byte(&markCosTable[i]);
-		siSum = siSum + (int16_t)sample * (int8_t)pgm_read_byte(&spaceSinTable[i]);
-		sqSum = sqSum + (int16_t)sample * (int8_t)pgm_read_byte(&spaceCosTable[i]);
+	nextSampleBufOffset = line.sampleBufOffset >= 19 ? 0 : line.sampleBufOffset + 1;
+	line.sampleBuffer[line.sampleBufOffset] = (int8_t)(ADCH - 0x80);
+	line.lpfBuf[line.lpfBufOffset] =
+		((int16_t)line.sampleBuffer[line.sampleBufOffset] *
+		line.sampleBuffer[nextSampleBufOffset]) >> 11;
+	line.sampleBufOffset = nextSampleBufOffset;
+	if (++line.lpfBufOffset >= 8)
+		line.lpfBufOffset = 0;
+
+	sample = 0;
+	for (i = 0; i < 8; i++) {
+		sample += line.lpfBuf[i];
 	}
 
-	if (miSum < 0)
-		miSum = -miSum;
-	if (mqSum < 0)
-		mqSum = -mqSum;
-	if (siSum < 0)
-		siSum = -siSum;
-	if (sqSum < 0)
-		sqSum = -sqSum;
-
-	miSum >>= 4;
-	mqSum >>= 4;
-	siSum >>= 4;
-	sqSum >>= 4;
-
-	sqrMISum = miSum * miSum;
-	sqrMQSum = mqSum * mqSum;
-	sqrSISum = siSum * siSum;
-	sqrSQSum = sqSum * sqSum;
-	
-	//line.lastBits = line.lastBits << 1;
-	if ((sqrMISum + sqrMQSum) > (sqrSISum + sqrSQSum)) {
-		//line.lastBits |= 1;
-		PORTD |= _BV(PORTD1);
-	} else {
-		PORTD &= ~_BV(PORTD1);
-	}
+	if (sample > 0)
+		PORTD |= 2;
+	else
+		PORTD &= ~2;
 	
 	PORTD &= ~_BV(PORTD2);
 	
 	// Kick off the next ADC conversion
 	ADCSRA |= _BV(ADSC);
-	
 }
+
+ISR(TIMER0_OVF_vect) {
+	// Read the RXD pin
+	
+	if (PIND & 1) {
+		line.phaseOut += 4666; // ~2225 Hz
+	} else {
+		line.phaseOut += 4247; // ~2025 Hz
+	}
+	
+	OCR0A = (pgm_read_byte(&sinTable[line.phaseOut >> 8]) >> 2) + 0x80;
+}	
+
 
 int main(void)
 {	
@@ -165,13 +113,19 @@ int main(void)
 	DDRB = 63; // 6 bit DAC output
 	PORTC = 0;
 	DDRC = 0;
-	DDRD = _BV(PORTD1) | _BV(PORTD2);
+	DDRD = _BV(PORTD1) | _BV(PORTD2) | _BV(PORTD6);
 	
-	// Initialize sample clock (~4800 Hz), assuming 16 MHz clock
-	OCR2A = 51;
+	// Initialize sample clock (~7200 Hz), assuming 16 MHz clock
+	OCR2A = 68;
 	TIMSK2 = _BV(OCIE2A);
     TCCR2A = _BV(WGM21); 
-	TCCR2B = _BV(CS22);
+	TCCR2B = _BV(CS21) | _BV(CS20);
+	
+	// Initialize PWM
+	OCR0A = 0x80;
+	TCCR0A = _BV(WGM00) | _BV(COM0A1);
+	TCCR0B = _BV(CS00);
+	TIMSK0 = _BV(TOIE0);
 
 	// Initialize the ADC
 	ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
