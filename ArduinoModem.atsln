@@ -1,0 +1,20 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 11.00
+# Atmel Studio Solution File, Format Version 11.00
+Project("{54F91283-7BC4-4236-8FF9-10F437C3AD48}") = "Bell103", "Bell103\Bell103.cproj", "{70082192-A47F-4A87-AE6F-F2A7B605024E}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|AVR = Debug|AVR
+		Release|AVR = Release|AVR
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{70082192-A47F-4A87-AE6F-F2A7B605024E}.Debug|AVR.ActiveCfg = Debug|AVR
+		{70082192-A47F-4A87-AE6F-F2A7B605024E}.Debug|AVR.Build.0 = Debug|AVR
+		{70082192-A47F-4A87-AE6F-F2A7B605024E}.Release|AVR.ActiveCfg = Release|AVR
+		{70082192-A47F-4A87-AE6F-F2A7B605024E}.Release|AVR.Build.0 = Release|AVR
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal

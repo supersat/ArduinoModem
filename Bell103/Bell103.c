@@ -49,12 +49,14 @@ const uint8_t sinTable[] PROGMEM = {
 };
 
 typedef struct {
-	// Buffer of the last 16 ADC samples
-	int8_t sampleBuffer[20];
-	int8_t lpfBuf[8];
-	uint8_t sampleBufOffset;
-	uint8_t lpfBufOffset;
-	//uint16_t lastBits;
+	int16_t lastSample;
+	int16_t lpfInBuf[3];
+	enum {
+		SYNC_STATE_IDLE,
+		SYNC_STATE_MARK,
+		SYNC_STATE_SPACE,
+	} syncState;
+	int8_t sampsSinceLastStateChange;
 
 	// Offset into the outgoing sine wave
 	uint16_t phaseOut;
@@ -64,31 +66,52 @@ line_t line;
 	
 ISR(TIMER2_COMPA_vect, ISR_NOBLOCK) {
 	uint8_t i;
-	int8_t sample;
-	uint8_t nextSampleBufOffset;
+	int16_t sample;
+	int16_t quadSample;
 	
 	PORTD |= _BV(PORTD2);
 	
-	nextSampleBufOffset = line.sampleBufOffset >= 19 ? 0 : line.sampleBufOffset + 1;
-	line.sampleBuffer[line.sampleBufOffset] = (int8_t)(ADCH - 0x80);
-	line.lpfBuf[line.lpfBufOffset] =
-		((int16_t)line.sampleBuffer[line.sampleBufOffset] *
-		line.sampleBuffer[nextSampleBufOffset]) >> 11;
-	line.sampleBufOffset = nextSampleBufOffset;
-	if (++line.lpfBufOffset >= 8)
-		line.lpfBufOffset = 0;
-
-	sample = 0;
-	for (i = 0; i < 8; i++) {
-		sample += line.lpfBuf[i];
-	}
-
-	if (sample > 0)
-		PORTD |= 2;
-	else
-		PORTD &= ~2;
+	sample = (int16_t)(ADC - 0x200);
+	quadSample = sample * line.lastSample; 
+	line.lastSample = sample;
 	
-	PORTD &= ~_BV(PORTD2);
+	// Low-pass filter the mixed quadSample
+	int16_t t = line.lpfInBuf[0];
+	int16_t p = quadSample - t;
+	line.lpfInBuf[0] = (p >> 2) + (p >> 4) + (p >> 6) + t;
+	int16_t lpfSample = line.lpfInBuf[0] - p;
+	
+	t = line.lpfInBuf[2];
+	p = line.lpfInBuf[1] - t;
+	line.lpfInBuf[2] = (p >> 4) + (p >> 6) - (p >> 8);
+	
+	t = line.lpfInBuf[2] - p;
+	p = quadSample - t;
+	line.lpfInBuf[1] = (p >> 2) + (p >> 4) + (p >> 7) + t;
+	lpfSample += line.lpfInBuf[1] - p;
+	
+	if (line.syncState == SYNC_STATE_IDLE) {
+		if (lpfSample < 0) {
+			line.syncState = SYNC_STATE_SPACE;
+		}
+	} else if (++line.sampsSinceLastStateChange == 14) {
+		// Sample bit
+		PORTD = (PORTD & ~_BV(PORTD1)) | (lpfSample > 0 ? _BV(PORTD1) : 0);
+	} else if (line.sampsSinceLastStateChange > 32) {
+		line.sampsSinceLastStateChange -= 28;
+	} else if (line.sampsSinceLastStateChange > 24) {
+		if (line.syncState == SYNC_STATE_SPACE && lpfSample > 0) {
+			line.syncState = SYNC_STATE_MARK;
+			line.sampsSinceLastStateChange = 0;
+		} else if (line.syncState == SYNC_STATE_MARK && lpfSample < 0) {
+			line.syncState = SYNC_STATE_SPACE;
+			line.sampsSinceLastStateChange = 0;
+		}
+	}
+	
+	// Dumb output
+	//PORTD = (PORTD & ~(_BV(PORTD2) | _BV(PORTD1))) |
+	//	(lpfSample > 0 ? _BV(PORTD1) : 0);
 	
 	// Kick off the next ADC conversion
 	ADCSRA |= _BV(ADSC);
@@ -103,7 +126,7 @@ ISR(TIMER0_OVF_vect) {
 		line.phaseOut += 4247; // ~2025 Hz
 	}
 	
-	OCR0A = (pgm_read_byte(&sinTable[line.phaseOut >> 8]) >> 2) + 0x80;
+	OCR0A = (pgm_read_byte(&sinTable[line.phaseOut >> 8]) >> 2);
 }	
 
 
@@ -115,8 +138,8 @@ int main(void)
 	DDRC = 0;
 	DDRD = _BV(PORTD1) | _BV(PORTD2) | _BV(PORTD6);
 	
-	// Initialize sample clock (~7200 Hz), assuming 16 MHz clock
-	OCR2A = 68;
+	// Initialize sample clock (~8500 Hz), assuming 16 MHz clock
+	OCR2A = 235;
 	TIMSK2 = _BV(OCIE2A);
     TCCR2A = _BV(WGM21); 
 	TCCR2B = _BV(CS21) | _BV(CS20);
@@ -129,7 +152,7 @@ int main(void)
 
 	// Initialize the ADC
 	ADCSRA = _BV(ADEN) | _BV(ADPS2) | _BV(ADPS1) | _BV(ADPS0);
-	ADMUX = _BV(REFS0) | _BV(ADLAR);
+	ADMUX = _BV(REFS0);
 	ADCSRB = 0;
 	ADCSRA |= _BV(ADSC);
 
